@@ -21,6 +21,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.organizations.exceptions import ConfigOverrideStaleError
 from apps.organizations.services import org_service
 from .serializers import (
     ActiveSchemaSerializer,
@@ -32,8 +33,21 @@ from .serializers import (
 )
 
 
-class OrganizationCreateView(APIView):
-    """POST /organizations/ – create a new organisation."""
+class OrganizationListCreateView(APIView):
+    """GET /organizations/ – list all orgs.  POST /organizations/ – create org."""
+
+    @extend_schema(
+        summary="List Organisations",
+        description="Returns a list of all organisations ordered by ID.",
+        responses={200: OrganizationSerializer(many=True)},
+        tags=["Organizations"],
+    )
+    def get(self, request: Request) -> Response:
+        orgs = org_service.list_organizations()
+        return Response(
+            OrganizationSerializer(orgs, many=True).data,
+            status=status.HTTP_200_OK,
+        )
 
     @extend_schema(
         summary="Create Organisation",
@@ -61,6 +75,26 @@ class OrganizationCreateView(APIView):
         return Response(
             OrganizationSerializer(org).data,
             status=status.HTTP_201_CREATED,
+        )
+
+
+class OrganizationDetailView(APIView):
+    """GET /organizations/{org_id}/ – retrieve a single organisation."""
+
+    @extend_schema(
+        summary="Get Organisation",
+        description="Returns a single organisation by its integer ID or slug.",
+        responses={
+            200: OrganizationSerializer,
+            404: OpenApiResponse(description="Organisation not found."),
+        },
+        tags=["Organizations"],
+    )
+    def get(self, request: Request, org_id: str) -> Response:
+        org = org_service.get_organization(org_id)
+        return Response(
+            OrganizationSerializer(org).data,
+            status=status.HTTP_200_OK,
         )
 
 
@@ -127,7 +161,20 @@ class OrganizationEffectiveConfigView(APIView):
         tags=["Organizations"],
     )
     def get(self, request: Request, org_id: str) -> Response:
-        effective_config = org_service.get_effective_config(org_id=org_id)
+        try:
+            effective_config = org_service.get_effective_config(org_id=org_id)
+        except ConfigOverrideStaleError as exc:
+            return Response(
+                {
+                    "detail": (
+                        "This organisation's saved config overrides are no longer "
+                        "valid against the current active schema. Please PUT new "
+                        "overrides to resolve the violations."
+                    ),
+                    "errors": exc.errors,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(
             {"effective_config": effective_config},
             status=status.HTTP_200_OK,
@@ -147,7 +194,7 @@ class ActiveSchemaView(APIView):
             200: ActiveSchemaSerializer,
             404: OpenApiResponse(description="No active schema found."),
         },
-        tags=["Schema"],
+        tags=["Active Schema"],
     )
     def get(self, request: Request) -> Response:
         schema = org_service.get_active_schema()

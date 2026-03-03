@@ -27,6 +27,7 @@ from apps.config_core.services.override_validator import (
     OverrideValidationResult,
     OverrideValidationService,
 )
+from apps.organizations.exceptions import ConfigOverrideStaleError
 from apps.organizations.models import Organization
 from apps.schema_registry.models import GlobalConfigSchema
 
@@ -59,6 +60,16 @@ def get_active_schema() -> GlobalConfigSchema:
 # ---------------------------------------------------------------------------
 # Organization CRUD
 # ---------------------------------------------------------------------------
+
+def list_organizations() -> list[Organization]:
+    """
+    Return all :class:`Organization` instances ordered by ``id``.
+
+    Returns:
+        A list of all ``Organization`` objects.
+    """
+    return list(Organization.objects.all())
+
 
 def create_organization(*, name: str) -> Organization:
     """
@@ -195,17 +206,44 @@ def get_effective_config(*, org_id: str) -> dict:
     Merges ``schema defaults → org overrides`` using
     :class:`~apps.config_core.services.config_resolver.ConfigResolver`.
 
+    Before resolving, retroactively re-validates the organisation's stored
+    ``config_overrides`` against the **current** active schema.  Policy
+    checks (role_forbidden / env_forbidden) are skipped because no
+    role/env context is available at read time — only structural violations
+    (unknown fields, missing required, immutable, type mismatch, constraint)
+    are enforced.
+
     Args:
-        org_id: UUID string of the target organisation.
+        org_id: String ID or slug of the target organisation.
 
     Returns:
         Fully-resolved ``{namespace: {field: value}}`` dict.
 
     Raises:
         django.http.Http404: If no active schema or no organisation found.
+        ConfigOverrideStaleError: If the stored overrides violate the
+            current active schema's structural rules.
     """
     active_schema = get_active_schema()
     org = get_organization(org_id)
+
+    # Retroactive revalidation – skip role/env policy checks.
+    if org.config_overrides:
+        revalidation_request = OverrideValidationRequest(
+            schema=active_schema.schema_definition,
+            overrides=org.config_overrides,
+            acting_role="",
+            environment="",
+            skip_policy=True,
+        )
+        result = OverrideValidationService.validate(revalidation_request)
+        if not result.valid:
+            logger.warning(
+                "effective_config_stale_overrides",
+                org_id=org_id,
+                error_count=len(result.errors),
+            )
+            raise ConfigOverrideStaleError(result.errors)
 
     return ConfigResolver.resolve(
         schema=active_schema.schema_definition,

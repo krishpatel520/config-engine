@@ -9,16 +9,24 @@ from django.urls import path
 from .views import (
     ActiveSchemaView,
     OrganizationConfigView,
-    OrganizationCreateView,
+    OrganizationDetailView,
     OrganizationEffectiveConfigView,
+    OrganizationListCreateView,
 )
 
 urlpatterns = [
-    # POST /api/v1/organizations/
+    # GET  /api/v1/organizations/         – List all organisations
+    # POST /api/v1/organizations/         – Create organisation
     path(
         "organizations/",
-        OrganizationCreateView.as_view(),
-        name="organization-create",
+        OrganizationListCreateView.as_view(),
+        name="organization-list-create",
+    ),
+    # GET /api/v1/organizations/<org_id>/ – Retrieve single organisation
+    path(
+        "organizations/<str:org_id>/",
+        OrganizationDetailView.as_view(),
+        name="organization-detail",
     ),
     # PUT /api/v1/organizations/<org_id>/config/
     path(

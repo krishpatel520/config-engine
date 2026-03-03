@@ -48,12 +48,16 @@ class OverrideValidationRequest:
             (e.g. ``"admin"``, ``"editor"``, ``"viewer"``).
         environment: Deployment environment for which the overrides apply
             (e.g. ``"prod"``, ``"staging"``, ``"dev"``).
+        skip_policy: When ``True``, skip role_forbidden (rule 4) and
+            env_forbidden (rule 5) checks.  Used for retroactive
+            revalidation on GET where no role/env context is available.
     """
 
     schema: dict
     overrides: dict
     acting_role: str
     environment: str
+    skip_policy: bool = False
 
 
 @dataclass
@@ -257,6 +261,7 @@ class OverrideValidationService:
                     acting_role=request.acting_role,
                     environment=request.environment,
                     errors=errors,
+                    skip_policy=request.skip_policy,
                 )
 
         return OverrideValidationResult(valid=len(errors) == 0, errors=errors)
@@ -273,6 +278,7 @@ class OverrideValidationService:
         acting_role: str,
         environment: str,
         errors: list[ErrorDict],
+        skip_policy: bool = False,
     ) -> None:
         """
         Run rules 3-7 for a single field in a namespace override.
@@ -302,10 +308,10 @@ class OverrideValidationService:
             })
             # Still run type/constraint checks so we give a full picture.
 
-        # ── Rule 4: role restrictions ─────────────────────────────────────
+        # ── Rule 4: role restrictions (skipped for retroactive GET revalidation)
         policy: dict = field_def.get("policy", {})
         editable_by_roles: list | None = policy.get("editable_by_roles")
-        if editable_by_roles is not None and acting_role not in editable_by_roles:
+        if not skip_policy and editable_by_roles is not None and acting_role not in editable_by_roles:
             errors.append({
                 "field": field_path,
                 "code": "role_forbidden",
@@ -315,9 +321,9 @@ class OverrideValidationService:
                 ),
             })
 
-        # ── Rule 5: environment restrictions ──────────────────────────────
+        # ── Rule 5: environment restrictions (skipped for retroactive GET revalidation)
         env_restrictions: list | None = policy.get("environment_restrictions")
-        if env_restrictions is not None and environment not in env_restrictions:
+        if not skip_policy and env_restrictions is not None and environment not in env_restrictions:
             errors.append({
                 "field": field_path,
                 "code": "env_forbidden",
