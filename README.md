@@ -1,6 +1,6 @@
-# JSON Config Engine PoC
+# JSON Config Engine
 
-A Django-based Proof of Concept for a dynamic JSON configuration management system. This engine allows you to define strict configuration schemas (using JSON Schema paradigms) and apply targeted overrides for different organizations or tenants.
+A Django-based dynamic JSON configuration management system. This engine allows you to define strict configuration schemas (using JSON Schema paradigms) and apply targeted overrides for different organizations or tenants.
 
 ## Core Concepts
 
@@ -67,7 +67,7 @@ python manage.py runserver
 
 ## Running Tests
 
-The project includes a comprehensive `pytest` suite ensuring 100% coverage across core services and API views.
+The project includes a comprehensive `pytest` suite ensuring full coverage across core services and API views.
 
 ```bash
 # Run all tests
