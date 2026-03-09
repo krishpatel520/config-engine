@@ -30,6 +30,10 @@ class ConfigSchema(models.Model):
 
     The ``schema_definition`` field stores the full JSON Schema as JSONB,
     enabling efficient server-side querying via ``__contains`` lookups.
+
+    At most **one** ``ConfigSchema`` per organization may be active at a time.
+    :meth:`save` enforces this automatically: activating a schema atomically
+    deactivates all other active schemas belonging to the same organization.
     """
 
     organization = models.ForeignKey(
@@ -55,6 +59,34 @@ class ConfigSchema(models.Model):
 
     def __str__(self) -> str:
         return f"{self.organization.slug}/{self.name}@v{self.version}"
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save(self, *args, **kwargs) -> None:
+        """
+        Persist the instance, ensuring the "only one active per org" invariant.
+
+        If ``self.is_active`` is ``True``, all *other* active
+        ``ConfigSchema`` rows belonging to the **same organization** are
+        deactivated atomically within the same database transaction using
+        ``SELECT FOR UPDATE`` to prevent race conditions.
+
+        Args:
+            *args: Passed through to :meth:`django.db.models.Model.save`.
+            **kwargs: Passed through to :meth:`django.db.models.Model.save`.
+        """
+        with transaction.atomic():
+            if self.is_active and self.organization_id:
+                (
+                    ConfigSchema.objects
+                    .select_for_update()
+                    .filter(organization_id=self.organization_id, is_active=True)
+                    .exclude(pk=self.pk)
+                    .update(is_active=False)
+                )
+            super().save(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
