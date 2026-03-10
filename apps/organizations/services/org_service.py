@@ -21,8 +21,8 @@ from __future__ import annotations
 import structlog
 from django.shortcuts import get_object_or_404
 
-from apps.config_core.services.config_resolver import ConfigResolver
-from apps.config_core.services.override_validator import (
+from apps.organizations.services.config_resolver import ConfigResolver
+from apps.organizations.services.override_validator import (
     OverrideValidationRequest,
     OverrideValidationResult,
     OverrideValidationService,
@@ -139,7 +139,7 @@ def apply_config_overrides(
     1. Fetch the active ``GlobalConfigSchema`` (404 if none).
     2. Fetch the ``Organization`` by *org_id* (404 if not found).
     3. Pass overrides through
-       :class:`~apps.config_core.services.override_validator.OverrideValidationService`.
+    :class:`~apps.organizations.services.override_validator.OverrideValidationService`.
     4. If validation fails, return the :class:`OverrideValidationResult` so
        the view can return a 400.
     5. If validation passes, persist the overrides and return
@@ -177,9 +177,14 @@ def apply_config_overrides(
         )
         return result, None
 
-    # Persist the overrides on the organisation.
+    # Persist the overrides and the freshly-computed effective config.
+    effective_config = ConfigResolver.resolve(
+        schema=active_schema.schema_definition,
+        org_overrides=overrides,
+    )
     org.config_overrides = overrides
-    org.save(update_fields=["config_overrides", "updated_at"])
+    org.effective_config = effective_config
+    org.save(update_fields=["config_overrides", "effective_config", "updated_at"])
 
     logger.info(
         "config_overrides_applied",
@@ -188,10 +193,6 @@ def apply_config_overrides(
         acting_role=acting_role,
     )
 
-    effective_config = ConfigResolver.resolve(
-        schema=active_schema.schema_definition,
-        org_overrides=org.config_overrides,
-    )
     return result, effective_config
 
 
@@ -204,7 +205,7 @@ def get_effective_config(*, org_id: str) -> dict:
     Return the fully-resolved effective configuration for an organisation.
 
     Merges ``schema defaults → org overrides`` using
-    :class:`~apps.config_core.services.config_resolver.ConfigResolver`.
+    :class:`~apps.organizations.services.config_resolver.ConfigResolver`.
 
     Before resolving, retroactively re-validates the organisation's stored
     ``config_overrides`` against the **current** active schema.  Policy
@@ -249,3 +250,77 @@ def get_effective_config(*, org_id: str) -> dict:
         schema=active_schema.schema_definition,
         org_overrides=org.config_overrides,
     )
+
+
+# ---------------------------------------------------------------------------
+# Bulk effective config recomputation
+# ---------------------------------------------------------------------------
+
+def recompute_all_effective_configs(schema_definition: dict | None = None) -> None:
+    """
+    Recompute and persist ``effective_config`` for every ``Organization``.
+
+    Called automatically when the active ``GlobalConfigSchema`` changes so
+    that the cached column is always consistent with the current schema.
+
+    For each organisation:
+
+    * If ``config_overrides`` is empty, resolve purely from schema defaults.
+    * If ``config_overrides`` is set, run a structural revalidation
+      (``skip_policy=True``).  On success, store the resolved config.
+      On failure (stale overrides), store ``None`` to signal staleness.
+
+    Args:
+        schema_definition: The active schema's ``schema_definition`` dict.
+            If ``None``, the function fetches the currently active schema
+            itself (or returns early if none is active).
+    """
+    if schema_definition is None:
+        active = GlobalConfigSchema.objects.filter(is_active=True).first()
+        if not active:
+            return
+        schema_definition = active.schema_definition
+
+    orgs = list(Organization.objects.all())
+    to_update: list[Organization] = []
+
+    for org in orgs:
+        if not org.config_overrides:
+            # No overrides → pure schema defaults; always valid.
+            computed = ConfigResolver.resolve(
+                schema=schema_definition,
+                org_overrides={},
+            )
+        else:
+            revalidation = OverrideValidationRequest(
+                schema=schema_definition,
+                overrides=org.config_overrides,
+                acting_role="",
+                environment="",
+                skip_policy=True,
+            )
+            result = OverrideValidationService.validate(revalidation)
+            if not result.valid:
+                logger.warning(
+                    "recompute_stale_overrides",
+                    org_id=org.id,
+                    org_name=org.name,
+                    error_count=len(result.errors),
+                )
+                computed = None  # Mark as stale
+            else:
+                computed = ConfigResolver.resolve(
+                    schema=schema_definition,
+                    org_overrides=org.config_overrides,
+                )
+
+        org.effective_config = computed
+        to_update.append(org)
+
+    if to_update:
+        Organization.objects.bulk_update(to_update, ["effective_config"])
+        logger.info(
+            "effective_configs_recomputed",
+            org_count=len(to_update),
+        )
+

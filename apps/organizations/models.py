@@ -24,6 +24,12 @@ class Organization(models.Model):
     config_overrides
         JSONB blob shaped as ``{namespace: {field: value}}``.  Defaults to
         an empty dict (no overrides – pure schema defaults apply).
+    effective_config
+        JSONB blob holding the last-computed fully-resolved configuration
+        (schema defaults → org overrides).  Updated automatically whenever
+        overrides are saved or the active global schema changes.  ``None``
+        when the configuration has never been computed or the stored overrides
+        are stale/invalid under the current schema.
     created_at / updated_at
         Automatic timestamps.
     """
@@ -39,6 +45,15 @@ class Organization(models.Model):
         default=dict,
         blank=True,
         help_text="Org-level overrides applied on top of the active GlobalConfigSchema.",
+    )
+    effective_config = models.JSONField(
+        null=True,
+        blank=True,
+        default=None,
+        help_text=(
+            "Last-computed effective configuration (schema defaults + org overrides). "
+            "Null if never computed or if stored overrides are stale under the current schema."
+        ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

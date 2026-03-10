@@ -262,3 +262,12 @@ class GlobalConfigSchema(models.Model):
                     .update(is_active=False)
                 )
             super().save(*args, **kwargs)
+
+            # After persisting, recompute every org's effective_config so
+            # the cached column stays consistent with the new active schema.
+            if self.is_active:
+                # Local import to avoid circular dependency at module load time.
+                from apps.organizations.services.org_service import (  # noqa: PLC0415
+                    recompute_all_effective_configs,
+                )
+                recompute_all_effective_configs(self.schema_definition)

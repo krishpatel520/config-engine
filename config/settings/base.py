@@ -39,7 +39,6 @@ THIRD_PARTY_APPS = [
 LOCAL_APPS = [
     "apps.organizations",
     "apps.schema_registry",
-    "apps.config_core",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -149,7 +148,7 @@ REST_FRAMEWORK = {
 # ---------------------------------------------------------------------------
 SPECTACULAR_SETTINGS = {
     "TITLE": "Config Engine API",
-    "DESCRIPTION": "Production-grade JSON configuration engine with schema registry.",
+    "DESCRIPTION": "JSON configuration engine with schema registry.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,

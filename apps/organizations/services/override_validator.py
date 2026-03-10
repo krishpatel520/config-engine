@@ -1,6 +1,6 @@
 """
-apps.config_core.services.override_validator
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+apps.organizations.services.override_validator
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Validates a proposed set of configuration overrides against a
 ``GlobalConfigSchema`` definition.
 

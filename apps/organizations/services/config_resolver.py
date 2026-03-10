@@ -1,6 +1,6 @@
 """
-apps.config_core.services.config_resolver
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+apps.organizations.services.config_resolver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Deterministic, pure-function configuration resolver.
 
 Merge precedence (lowest → highest priority):

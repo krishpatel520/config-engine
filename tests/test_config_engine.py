@@ -17,8 +17,8 @@ import pytest
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from apps.config_core.services.config_resolver import ConfigResolver
-from apps.config_core.services.override_validator import (
+from apps.organizations.services.config_resolver import ConfigResolver
+from apps.organizations.services.override_validator import (
     OverrideValidationRequest,
     OverrideValidationService,
 )

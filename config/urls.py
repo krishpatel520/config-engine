@@ -25,5 +25,4 @@ urlpatterns = [
     # Application API routes
     path("api/v1/", include("apps.organizations.urls")),
     path("api/v1/", include("apps.schema_registry.urls")),
-    path("api/v1/", include("apps.config_core.urls")),
 ]
