@@ -15,7 +15,6 @@ The project is broken down into modular Django apps located in `apps/`:
 
 *   `schema_registry`: Manages the creation, versioning, and validation of `ConfigSchema` and the active `GlobalConfigSchema`. Contains the robust `SchemaValidator`.
 *   `organizations`: Manages tenant records (`Organization` model) and their specific JSON configuration overrides.
-*   `config_core`: The execution engine. Contains the `ConfigResolver` (which merges defaults and overrides) and the `OverrideValidationService` (which ensures overrides don't violate schema rules).
 
 ## Setup Instructions
 
