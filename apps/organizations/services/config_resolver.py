@@ -39,8 +39,9 @@ class ConfigResolver:
     dict.
 
     The result always contains **every namespace and field** declared in the
-    schema, with values drawn from the highest-priority source that provides
-    them.
+    schema, preserving all field metadata (``type``, ``editable``, ``required``,
+    ``constraints``, ``policy``, etc.), with the ``"default"`` key of each
+    overridden field replaced by the override value.
 
     Example::
 
@@ -56,7 +57,14 @@ class ConfigResolver:
         user_overrides = {"payments": {"max_retries": 5}}
 
         resolved = ConfigResolver.resolve(schema, org_overrides, user_overrides)
-        # → {"payments": {"currency": "EUR", "max_retries": 5}}
+        # → {
+        #     "namespaces": {
+        #         "payments": {
+        #             "currency": {"type": "string", "default": "EUR"},
+        #             "max_retries": {"type": "integer", "default": 5},
+        #         }
+        #     }
+        #   }
     """
 
     @staticmethod
@@ -71,30 +79,27 @@ class ConfigResolver:
 
         **Merge algorithm** (executed in this exact order):
 
-        1. Build *base* from schema defaults::
+        1. Deep-copy the entire ``"namespaces"`` structure from the schema,
+           preserving all field metadata (``type``, ``default``, ``editable``,
+           ``required``, ``constraints``, ``policy``, etc.).
 
-               {
-                   namespace: {
-                       field: field_def["default"]
-                       for field, field_def in fields.items()
-                   }
-                   for namespace, fields in schema["namespaces"].items()
-               }
-
-        2. Deep-merge *org_overrides* onto *base*.  For each namespace key
-           present in *org_overrides* that also exists in *base*: for each
+        2. Deep-merge *org_overrides* onto the copy.  For each namespace key
+           present in *org_overrides* that also exists in the copy: for each
            field key present in that namespace that also exists in the schema
-           namespace, set ``base[namespace][field] = override_value``.
-           Unknown namespaces and fields are silently skipped.
+           namespace, replace ``copy[namespace][field]["default"]`` with the
+           override value.  Unknown namespaces and fields are silently skipped.
 
         3. Deep-merge *user_overrides* onto the result of step 2, using the
            same rule as step 2.
 
-        4. Return the merged dict.
+        4. Return ``{"namespaces": <merged copy>}`` — the same top-level shape
+           as the original ``GlobalConfigSchema.schema_definition``.
 
         .. note::
-            Field values are treated as **atomic** — nested dicts inside a
-            field value are replaced wholesale, not recursively merged.
+            The ``"default"`` key inside each field definition holds the
+            effective resolved value for that field.  All other field metadata
+            (type, constraints, policy, etc.) is preserved verbatim from the
+            schema.
 
         Args:
             schema: A structurally valid ``GlobalConfigSchema.schema_definition``
@@ -108,10 +113,11 @@ class ConfigResolver:
                 overrides".
 
         Returns:
-            A new dict containing every namespace and field from the schema,
-            with values resolved according to the merge precedence order.
-            The returned dict is independent of all input dicts (deep copy
-            semantics); mutating it will not affect the inputs.
+            A new dict with the shape ``{"namespaces": {namespace: {field: field_def}}}``
+            containing every namespace and field from the schema, with the
+            ``"default"`` key of each overridden field replaced by the
+            override value.  The returned dict is independent of all input
+            dicts (deep copy semantics); mutating it will not affect the inputs.
 
         Raises:
             KeyError: If *schema* does not contain a ``"namespaces"`` key.
@@ -126,25 +132,18 @@ class ConfigResolver:
                 org_overrides=org.config_overrides,
                 user_overrides=session.get("user_overrides"),
             )
+            # resolved["namespaces"]["payments"]["currency"]["default"]
+            # → the effective currency for this org.
         """
-        namespaces: dict[str, dict] = schema["namespaces"]
-
-        # ── Step 1: build base from schema defaults ───────────────────────
-        # deep-copy each default value so the caller cannot mutate the result
-        # back into the schema definition.
-        base: dict[str, dict] = {
-            namespace: {
-                fname: copy.deepcopy(fdef["default"])
-                for fname, fdef in fields.items()
-            }
-            for namespace, fields in namespaces.items()
-        }
+        # ── Step 1: deep-copy the full schema namespace structure ─────────
+        # This preserves all field metadata (type, editable, constraints, …).
+        base: dict[str, dict] = copy.deepcopy(schema["namespaces"])
 
         # ── Steps 2 & 3: apply override layers ───────────────────────────
         for override_layer in (org_overrides, user_overrides):
-            ConfigResolver._apply_overrides(base, namespaces, override_layer)
+            ConfigResolver._apply_overrides(base, override_layer)
 
-        return base
+        return {"namespaces": base}
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -153,21 +152,19 @@ class ConfigResolver:
     @staticmethod
     def _apply_overrides(
         base: dict[str, dict],
-        schema_namespaces: dict[str, dict],
         overrides: dict | None,
     ) -> None:
         """
         Mutate *base* in-place by applying a single override layer.
 
-        Unknown namespaces and unknown fields within a known namespace are
-        silently skipped.  Field values are treated as atomic — no recursive
-        merge is performed within a field value.
+        For each overridden field, only the ``"default"`` key inside the
+        field definition dict is replaced.  All other field metadata is
+        preserved.  Unknown namespaces and unknown fields within a known
+        namespace are silently skipped.
 
         Args:
-            base: The mutable resolved-config dict built from schema defaults
-                (and potentially already patched by a previous override layer).
-            schema_namespaces: The ``"namespaces"`` dict from the schema,
-                used to identify which namespaces and fields are valid.
+            base: The mutable deep-copied namespaces dict (keyed by namespace
+                name, then field name, then field definition dict).
             overrides: The override blob to merge, or ``None`` / ``{}`` to
                 skip this layer entirely.
         """
@@ -176,18 +173,17 @@ class ConfigResolver:
 
         for ns_name, ns_overrides in overrides.items():
             # Silently skip unknown namespaces
-            if ns_name not in schema_namespaces:
+            if ns_name not in base:
                 continue
             if not isinstance(ns_overrides, dict):
                 continue
 
-            schema_fields: dict = schema_namespaces[ns_name]
+            ns_fields: dict = base[ns_name]
 
             for field_name, override_value in ns_overrides.items():
                 # Silently skip unknown fields
-                if field_name not in schema_fields:
+                if field_name not in ns_fields:
                     continue
 
-                # Treat field values as atomic — deep-copy so the caller
-                # cannot mutate the result through the override dict reference.
-                base[ns_name][field_name] = copy.deepcopy(override_value)
+                # Patch only the "default" key; all other metadata is kept.
+                ns_fields[field_name]["default"] = copy.deepcopy(override_value)

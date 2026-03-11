@@ -405,22 +405,24 @@ class TestConfigResolver:
     def test_defaults_only_no_overrides(self):
         """With no overrides the result must equal the schema defaults."""
         result = ConfigResolver.resolve(schema=REALISTIC_SCHEMA)
-        assert result["payments"]["max_transaction_limit"] == 10000.0
-        assert result["payments"]["currency"] == "USD"
-        assert result["payments"]["processor_id"] == "stripe_v2"
-        assert result["features"]["dark_mode"] is False
-        assert result["features"]["max_users"] == 50
+        ns = result["namespaces"]
+        assert ns["payments"]["max_transaction_limit"]["default"] == 10000.0
+        assert ns["payments"]["currency"]["default"] == "USD"
+        assert ns["payments"]["processor_id"]["default"] == "stripe_v2"
+        assert ns["features"]["dark_mode"]["default"] is False
+        assert ns["features"]["max_users"]["default"] == 50
 
     def test_org_overrides_applied(self):
-        """Org overrides must replace defaults for the specified fields."""
+        """Org overrides must be reflected in the 'default' key of the overridden field."""
         org_overrides = {"payments": {"currency": "EUR"}}
         result = ConfigResolver.resolve(schema=REALISTIC_SCHEMA, org_overrides=org_overrides)
-        assert result["payments"]["currency"] == "EUR"
-        # Other fields must still be defaults
-        assert result["payments"]["max_transaction_limit"] == 10000.0
+        ns = result["namespaces"]
+        assert ns["payments"]["currency"]["default"] == "EUR"
+        # Other fields must still carry their schema defaults
+        assert ns["payments"]["max_transaction_limit"]["default"] == 10000.0
 
     def test_user_overrides_take_precedence_over_org(self):
-        """User overrides must win over org overrides."""
+        """User overrides must win over org overrides (reflected in 'default' key)."""
         org_overrides = {"payments": {"currency": "EUR"}}
         user_overrides = {"payments": {"currency": "GBP"}}
         result = ConfigResolver.resolve(
@@ -428,7 +430,7 @@ class TestConfigResolver:
             org_overrides=org_overrides,
             user_overrides=user_overrides,
         )
-        assert result["payments"]["currency"] == "GBP"
+        assert result["namespaces"]["payments"]["currency"]["default"] == "GBP"
 
     def test_unknown_override_fields_silently_ignored(self):
         """Unknown namespaces and fields in overrides must be silently skipped."""
@@ -437,17 +439,19 @@ class TestConfigResolver:
             "payments": {"ghost_field": "ignored", "currency": "GBP"},
         }
         result = ConfigResolver.resolve(schema=REALISTIC_SCHEMA, org_overrides=org_overrides)
-        assert "ghost_namespace" not in result
-        assert "ghost_field" not in result["payments"]
-        assert result["payments"]["currency"] == "GBP"
+        ns = result["namespaces"]
+        assert "ghost_namespace" not in ns
+        assert "ghost_field" not in ns["payments"]
+        assert ns["payments"]["currency"]["default"] == "GBP"
 
     def test_all_schema_fields_always_present_in_result(self):
         """Every namespace and field from the schema must appear in the result."""
         result = ConfigResolver.resolve(schema=REALISTIC_SCHEMA)
-        for ns, fields in REALISTIC_SCHEMA["namespaces"].items():
-            assert ns in result, f"Namespace '{ns}' missing from result"
+        ns = result["namespaces"]
+        for namespace, fields in REALISTIC_SCHEMA["namespaces"].items():
+            assert namespace in ns, f"Namespace '{namespace}' missing from result"
             for fname in fields:
-                assert fname in result[ns], f"Field '{ns}.{fname}' missing from result"
+                assert fname in ns[namespace], f"Field '{namespace}.{fname}' missing from result"
 
     def test_none_overrides_treated_as_empty(self):
         """None for either override parameter must produce pure defaults."""
@@ -518,10 +522,11 @@ class TestAPIEndpoints:
         assert resp.status_code == status.HTTP_200_OK
         body = resp.json()
         assert "effective_config" in body
-        assert body["effective_config"]["payments"]["currency"] == "EUR"
-        assert body["effective_config"]["payments"]["max_transaction_limit"] == 25000.0
+        ef_ns = body["effective_config"]["namespaces"]
+        assert ef_ns["payments"]["currency"]["default"] == "EUR"
+        assert ef_ns["payments"]["max_transaction_limit"]["default"] == 25000.0
         # Schema defaults still present for non-overridden fields
-        assert "processor_id" in body["effective_config"]["payments"]
+        assert "processor_id" in ef_ns["payments"]
 
     def test_put_config_invalid_returns_400_with_errors(
         self, api_client, org, active_schema
@@ -553,12 +558,12 @@ class TestAPIEndpoints:
         assert resp.status_code == status.HTTP_200_OK
         body = resp.json()
         assert "effective_config" in body
-        ef = body["effective_config"]
-        assert "payments" in ef
-        assert "features" in ef
-        # With no overrides, defaults should be returned
-        assert ef["payments"]["currency"] == "USD"
-        assert ef["features"]["dark_mode"] is False
+        ef_ns = body["effective_config"]["namespaces"]
+        assert "payments" in ef_ns
+        assert "features" in ef_ns
+        # With no overrides, schema defaults should be reflected in "default" keys
+        assert ef_ns["payments"]["currency"]["default"] == "USD"
+        assert ef_ns["features"]["dark_mode"]["default"] is False
 
     # ── GET /schema/active/ ──────────────────────────────────────────────────
 
