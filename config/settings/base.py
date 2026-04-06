@@ -154,8 +154,11 @@ REST_FRAMEWORK = {
 # drf-spectacular (OpenAPI 3)
 # ---------------------------------------------------------------------------
 SPECTACULAR_SETTINGS = {
-    "TITLE": "Config Engine API",
-    "DESCRIPTION": "JSON configuration engine with schema registry.",
+    "TITLE": "JSON Config Engine API",
+    "DESCRIPTION": (
+        "Snapshot-based UI configuration management with OOB, Tenant, and User level overrides. "
+        "Supports lineage tracking, drift detection, and upgrade alerts."
+    ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,

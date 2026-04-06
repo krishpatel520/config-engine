@@ -53,21 +53,44 @@ class ConfigResolutionService:
             return None
 
     @staticmethod
-    def _cache_key(config_key: str, tenant_id: str | None, user_id: str | None) -> str:
-        """Build a deterministic cache key for the given resolution inputs."""
+    def _ptr_key(config_key: str, tenant_id: str | None, user_id: str | None) -> str:
+        """Pointer key — stores the full versioned key for the given resolution inputs."""
         t = tenant_id or "none"
         u = user_id or "none"
-        return f"config:{config_key}:{t}:{u}"
+        return f"config:ptr:{config_key}:{t}:{u}"
+
+    @staticmethod
+    def _cache_key(config_key: str, tenant_id: str | None, user_id: str | None, release_version: str) -> str:
+        """Full versioned cache key that includes the resolved release version."""
+        t = tenant_id or "none"
+        u = user_id or "none"
+        return f"config:{config_key}:{t}:{u}:{release_version}"
 
     @staticmethod
     def invalidate_cache(
         config_key: str,
         tenant_id: str | None = None,
         user_id: str | None = None,
+        release_version: str | None = None,
     ) -> None:
-        """Delete the cached result for the given (config_key, tenant_id, user_id) combination."""
-        key = ConfigResolutionService._cache_key(config_key, tenant_id, user_id)
-        cache.delete(key)
+        """
+        Delete both the pointer key and the full versioned key for the given
+        (config_key, tenant_id, user_id) combination.
+
+        If release_version is provided the full key is deleted directly;
+        otherwise only the pointer key is removed (the full key expires naturally).
+        """
+        ptr_key = ConfigResolutionService._ptr_key(config_key, tenant_id, user_id)
+
+        if release_version is None:
+            # Try to resolve the full key via the pointer before deleting both
+            release_version = cache.get(ptr_key)
+
+        if release_version:
+            full_key = ConfigResolutionService._cache_key(config_key, tenant_id, user_id, release_version)
+            cache.delete(full_key)
+
+        cache.delete(ptr_key)
 
     @staticmethod
     def get_effective_config(
@@ -89,14 +112,22 @@ class ConfigResolutionService:
             }
 
         Results are cached for CACHE_TIMEOUT seconds (300 s by default).
+        Cache uses a two-key scheme:
+          - pointer key  → holds the resolved release_version string
+          - full key     → holds the result dict, keyed by release_version
+        This allows invalidation without knowing the release version upfront.
         Raises ConfigInstance.DoesNotExist if no OOB config exists.
         """
-        cache_key = ConfigResolutionService._cache_key(config_key, tenant_id, user_id)
+        ptr_key = ConfigResolutionService._ptr_key(config_key, tenant_id, user_id)
 
-        # --- cache read ---
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
+        # --- cache read: follow pointer → full key ---
+        cached_release = cache.get(ptr_key)
+        if cached_release is not None:
+            full_key = ConfigResolutionService._cache_key(config_key, tenant_id, user_id, cached_release)
+            cached = cache.get(full_key)
+            if cached is not None:
+                return cached
+            # Pointer is stale (full key expired) — fall through to DB
 
         candidates = []
 
@@ -114,8 +145,13 @@ class ConfigResolutionService:
                     "source": source,
                     "release": instance.release_version,
                 }
-                # --- cache write ---
-                cache.set(cache_key, result, timeout=CACHE_TIMEOUT)
+                # --- cache write: store result under full key, pointer under ptr key ---
+                full_key = ConfigResolutionService._cache_key(
+                    config_key, tenant_id, user_id, instance.release_version
+                )
+                ptr_key = ConfigResolutionService._ptr_key(config_key, tenant_id, user_id)
+                cache.set(full_key, result, timeout=CACHE_TIMEOUT)
+                cache.set(ptr_key, instance.release_version, timeout=CACHE_TIMEOUT)
                 return result
 
         # No OOB found — surface Django's own DoesNotExist

@@ -1,3 +1,4 @@
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.request import Request
@@ -8,14 +9,48 @@ from apps.config_engine.models import ConfigInstance
 from apps.config_engine.serializers import ConfigInstanceSerializer
 from apps.config_engine.services import ConfigHasher, ConfigResolutionService
 
+# ---------------------------------------------------------------------------
+# Inline response schemas for endpoints that return free-form dicts
+# ---------------------------------------------------------------------------
+_EFFECTIVE_CONFIG_RESPONSE = {
+    "type": "object",
+    "properties": {
+        "config":   {"type": "object"},
+        "source":   {"type": "string", "enum": ["user", "tenant", "oob"]},
+        "release":  {"type": "string"},
+    },
+}
+
+_DIFF_RESPONSE = {
+    "type": "object",
+    "properties": {
+        "current":     {"type": "object"},
+        "oob":         {"type": "object"},
+        "is_drifted":  {"type": "boolean"},
+        "is_outdated": {"type": "boolean"},
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Views
+# ---------------------------------------------------------------------------
 
 @extend_schema(
+    summary="Get effective config",
+    description=(
+        "Resolves and returns the active config for the given key. "
+        "Resolution order: User → Tenant → OOB."
+    ),
     parameters=[
-        OpenApiParameter("key", str, required=True, description="Config key to resolve"),
-        OpenApiParameter("tenant_id", str, required=False),
-        OpenApiParameter("user_id", str, required=False),
+        OpenApiParameter("key",       OpenApiTypes.STR, required=True,  description="Config key e.g. invoice.form"),
+        OpenApiParameter("tenant_id", OpenApiTypes.STR, required=False, description="Tenant scope ID"),
+        OpenApiParameter("user_id",   OpenApiTypes.STR, required=False, description="User scope ID"),
     ],
-    responses={200: OpenApiResponse(description="Effective config with source and release"), 404: OpenApiResponse(description="No OOB config found")},
+    responses={
+        200: OpenApiResponse(response=_EFFECTIVE_CONFIG_RESPONSE, description="Resolved config with source and release"),
+        404: OpenApiResponse(description="No active OOB config found for key"),
+    },
 )
 class GetEffectiveConfigView(APIView):
     """
@@ -50,63 +85,39 @@ class GetEffectiveConfigView(APIView):
 
 
 @extend_schema(
+    summary="Create or replace a config override",
+    description=(
+        "Creates a tenant or user override. Automatically deactivates the previous override "
+        "for the same scope. Standardizes on using 'scope_id' (e.g. tenant_acme) regardless of type."
+    ),
     request=ConfigInstanceSerializer,
-    responses={201: ConfigInstanceSerializer},
+    responses={
+        201: ConfigInstanceSerializer,
+        400: OpenApiResponse(description="Validation error (e.g. missing scope_id or OOB scope rejected)"),
+    },
 )
 class CreateOverrideView(APIView):
     """
     POST /api/v1/config/override/
-    Body: { config_key, scope_type, tenant_id | user_id, config_json, release_version }
+    Body: { config_key, scope_type, scope_id, config_json, release_version, ... }
     """
 
     def post(self, request: Request) -> Response:
-        data = request.data
+        serializer = ConfigInstanceSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        config_key = data.get("config_key")
-        scope_type = data.get("scope_type")
-        config_json = data.get("config_json")
-        release_version = data.get("release_version")
-
-        # --- validation ---
-        missing = [
-            f for f in ("config_key", "scope_type", "config_json", "release_version")
-            if not data.get(f)
-        ]
-        if missing:
-            return Response(
-                {"detail": f"Missing required fields: {missing}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if scope_type == "oob":
-            return Response(
-                {"detail": "OOB configs are immutable via the API."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if scope_type not in ("tenant", "user"):
-            return Response(
-                {"detail": "scope_type must be 'tenant' or 'user'."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Resolve scope_id from tenant_id / user_id
-        scope_id = data.get("tenant_id") if scope_type == "tenant" else data.get("user_id")
-        if not scope_id:
-            return Response(
-                {"detail": f"'{ 'tenant_id' if scope_type == 'tenant' else 'user_id' }' is required for scope_type='{scope_type}'."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        valid_data = serializer.validated_data
 
         instance = ConfigResolutionService.create_or_replace_override(
-            config_key=config_key,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            config_json=config_json,
-            release_version=release_version,
-            base_config_id=data.get("base_config_id"),
-            base_release_version=data.get("base_release_version"),
-            parent_config_instance_id=data.get("parent_config_instance_id"),
+            config_key=valid_data["config_key"],
+            scope_type=valid_data["scope_type"],
+            scope_id=valid_data["scope_id"],
+            config_json=valid_data["config_json"],
+            release_version=valid_data["release_version"],
+            base_config_id=valid_data.get("base_config_id"),
+            base_release_version=valid_data.get("base_release_version"),
+            parent_config_instance_id=valid_data.get("parent_config_instance_id"),
         )
 
         return Response(
@@ -116,7 +127,26 @@ class CreateOverrideView(APIView):
 
 
 @extend_schema(
-    responses={204: OpenApiResponse(description="Reset successful")},
+    summary="Reset override to OOB",
+    description=(
+        "Deactivates all active overrides for the given config key and scope, "
+        "falling back to OOB resolution."
+    ),
+    request={
+        "application/json": {
+            "type": "object",
+            "required": ["config_key", "scope_type", "scope_id"],
+            "properties": {
+                "config_key":  {"type": "string"},
+                "scope_type":  {"type": "string", "enum": ["tenant", "user"]},
+                "scope_id":    {"type": "string"},
+            },
+        }
+    },
+    responses={
+        204: OpenApiResponse(description="Override successfully deactivated — falls back to OOB"),
+        400: OpenApiResponse(description="Missing required fields"),
+    },
 )
 class ResetToOOBView(APIView):
     """
@@ -143,8 +173,18 @@ class ResetToOOBView(APIView):
 
 
 @extend_schema(
-    parameters=[OpenApiParameter("config_key", str, required=True)],
-    responses={200: ConfigInstanceSerializer(many=True)},
+    summary="Get config lineage",
+    description=(
+        "Returns the full history of all config instances (active and inactive) "
+        "for a given config key across all scopes."
+    ),
+    parameters=[
+        OpenApiParameter("config_key", OpenApiTypes.STR, required=True, description="Config key to retrieve lineage for"),
+    ],
+    responses={
+        200: ConfigInstanceSerializer(many=True),
+        400: OpenApiResponse(description="Missing config_key parameter"),
+    },
 )
 class GetLineageView(APIView):
     """
@@ -170,12 +210,20 @@ class GetLineageView(APIView):
 
 
 @extend_schema(
+    summary="Diff config against current OOB",
+    description=(
+        "Compares a specific config instance against the currently active OOB config. "
+        "Returns drift and outdated status."
+    ),
     parameters=[
-        OpenApiParameter("config_key", str, required=True),
-        OpenApiParameter("scope_type", str, required=True),
-        OpenApiParameter("scope_id", str, required=False),
+        OpenApiParameter("config_key",  OpenApiTypes.STR, required=True,  description="Config key"),
+        OpenApiParameter("scope_type",  OpenApiTypes.STR, required=True,  description="Scope type: tenant or user"),
+        OpenApiParameter("scope_id",    OpenApiTypes.STR, required=False, description="Scope ID (tenant or user ID)"),
     ],
-    responses={200: OpenApiResponse(description="Diff result with drift/outdated flags"), 404: OpenApiResponse(description="Config not found")},
+    responses={
+        200: OpenApiResponse(response=_DIFF_RESPONSE, description="Diff result with drift and outdated flags"),
+        404: OpenApiResponse(description="No active config found for the given scope"),
+    },
 )
 class DiffConfigView(APIView):
     """
@@ -236,6 +284,11 @@ class DiffConfigView(APIView):
 
 
 @extend_schema(
+    summary="List outdated tenant configs",
+    description=(
+        "Returns all active tenant configs whose base OOB has been superseded "
+        "by a newer release."
+    ),
     responses={200: ConfigInstanceSerializer(many=True)},
 )
 class OutdatedConfigsView(APIView):

@@ -15,6 +15,7 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.config_engine.models import ConfigInstance
+from apps.config_engine.services import ConfigResolutionService
 
 
 class Command(BaseCommand):
@@ -111,7 +112,12 @@ class Command(BaseCommand):
         )
 
         # ------------------------------------------------------------------
-        # 5. Success
+        # 5. Invalidate cache so the new OOB is served immediately
+        # ------------------------------------------------------------------
+        ConfigResolutionService.invalidate_cache(config_key=config_key)
+
+        # ------------------------------------------------------------------
+        # 6. Success
         # ------------------------------------------------------------------
         self.stdout.write(
             self.style.SUCCESS(

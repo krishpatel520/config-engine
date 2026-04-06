@@ -1,0 +1,130 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}Config Diff — {{ obj }}{% endblock %}
+
+{% block content %}
+<style>
+    :root {
+        --green:  #40a02b;
+        --yellow: #df8e1d;
+        --red:    #d20f39;
+        --surface: #f5f5f5;
+        --mono: 'Fira Mono', 'Consolas', 'Courier New', monospace;
+    }
+
+    .diff-banner {
+        padding: 12px 18px;
+        border-radius: 6px;
+        font-weight: bold;
+        font-size: 14px;
+        margin-bottom: 20px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .diff-banner.in-sync  { background: #d3f9d8; color: var(--green);  border-left: 5px solid var(--green);  }
+    .diff-banner.outdated { background: #fff3cd; color: var(--yellow); border-left: 5px solid var(--yellow); }
+    .diff-banner.drifted  { background: #ffe0e6; color: var(--red);    border-left: 5px solid var(--red);    }
+
+    .diff-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+    }
+    .diff-panel h3 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: .06em;
+        color: #555;
+        margin-bottom: 8px;
+    }
+    .diff-panel pre {
+        background: #1e1e2e;
+        color: #cdd6f4;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.6;
+        padding: 16px;
+        border-radius: 6px;
+        overflow: auto;
+        max-height: 600px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    .meta-table { border-collapse: collapse; margin-bottom: 24px; width: 100%; }
+    .meta-table th, .meta-table td {
+        text-align: left;
+        padding: 7px 14px;
+        border: 1px solid #e0e0e0;
+        font-size: 13px;
+    }
+    .meta-table th { background: #f0f0f0; font-weight: 600; width: 220px; }
+
+    .back-btn {
+        display: inline-block;
+        margin-top: 24px;
+        padding: 8px 16px;
+        background: #417690;
+        color: #fff;
+        border-radius: 4px;
+        text-decoration: none;
+        font-size: 13px;
+    }
+    .back-btn:hover { background: #2c5f78; color: #fff; }
+</style>
+
+<h1>Config Diff — <code>{{ obj.config_key }}</code></h1>
+
+{# ── Status banner ── #}
+{% if is_drifted %}
+    <div class="diff-banner drifted">
+        🔴 DRIFTED — The stored base_config_hash does not match the current OOB payload hash.
+        This config was derived from an OOB that has since changed content.
+    </div>
+{% elif is_outdated %}
+    <div class="diff-banner outdated">
+        🟡 OUTDATED — This config\'s base_config_id no longer matches the current active OOB.
+        A newer OOB release is available but this config has not been re-evaluated.
+    </div>
+{% else %}
+    <div class="diff-banner in-sync">
+        🟢 IN SYNC — This config is based on the current active OOB release.
+    </div>
+{% endif %}
+
+{# ── Metadata table ── #}
+<table class="meta-table">
+    <tr><th>ID</th>               <td>{{ obj.id }}</td></tr>
+    <tr><th>config_key</th>       <td>{{ obj.config_key }}</td></tr>
+    <tr><th>scope_type</th>       <td>{{ obj.scope_type }}</td></tr>
+    <tr><th>scope_id</th>         <td>{{ obj.scope_id|default:"—" }}</td></tr>
+    <tr><th>release_version</th>  <td>{{ obj.release_version }}</td></tr>
+    <tr><th>is_active</th>        <td>{{ obj.is_active }}</td></tr>
+    <tr><th>base_config_id</th>   <td>{{ obj.base_config_id|default:"—" }}</td></tr>
+    <tr><th>base_config_hash</th> <td><code style="font-size:11px">{{ obj.base_config_hash|default:"—" }}</code></td></tr>
+    {% if oob %}
+    <tr><th>Current OOB id</th>   <td>{{ oob.id }}</td></tr>
+    <tr><th>Current OOB release</th><td>{{ oob.release_version }}</td></tr>
+    {% endif %}
+</table>
+
+{# ── Side-by-side JSON ── #}
+<div class="diff-grid">
+    <div class="diff-panel">
+        <h3>This Config ({{ obj.scope_type }}{% if obj.scope_id %} · {{ obj.scope_id }}{% endif %})</h3>
+        <pre>{{ this_json }}</pre>
+    </div>
+    <div class="diff-panel">
+        <h3>Current Active OOB{% if oob %} · {{ oob.release_version }}{% endif %}</h3>
+        {% if oob %}
+            <pre>{{ oob_json }}</pre>
+        {% else %}
+            <pre style="color:#888;font-style:italic;">No active OOB config found for this key.</pre>
+        {% endif %}
+    </div>
+</div>
+
+<a class="back-btn" href="../../">← Back to list</a>
+{% endblock %}

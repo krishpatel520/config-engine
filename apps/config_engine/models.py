@@ -1,6 +1,8 @@
 import uuid
 
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q, UniqueConstraint
 
 
 class ConfigInstance(models.Model):
@@ -38,6 +40,13 @@ class ConfigInstance(models.Model):
         unique_together = [
             ("config_key", "scope_type", "scope_id", "is_active"),
         ]
+        constraints = [
+            UniqueConstraint(
+                fields=["config_key", "release_version"],
+                condition=Q(scope_type="oob"),
+                name="unique_oob_config",
+            )
+        ]
         indexes = [
             models.Index(
                 fields=["config_key", "scope_type", "scope_id", "is_active"],
@@ -55,3 +64,23 @@ class ConfigInstance(models.Model):
 
     def __str__(self) -> str:
         return f"{self.config_key} [{self.scope_type}:{self.scope_id}] v{self.release_version}"
+
+    def clean(self):
+        if self.scope_type == "oob":
+            if self.scope_id:
+                raise ValidationError("OOB configs must not have a scope_id.")
+        else:
+            if not self.scope_id:
+                raise ValidationError(f"scope_id is required for scope_type='{self.scope_type}'.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        if not self._state.adding:
+            # This is an update
+            original = ConfigInstance.objects.get(pk=self.id)
+            if original.scope_type == "oob":
+                # Check for changes in core fields
+                for field in ("config_key", "release_version", "config_json", "scope_type"):
+                    if getattr(self, field) != getattr(original, field):
+                        raise ValidationError(f"OOB configs are immutable. Cannot change field '{field}'.")
+        super().save(*args, **kwargs)

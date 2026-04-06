@@ -8,3 +8,26 @@ class ConfigInstanceSerializer(serializers.ModelSerializer):
         model = ConfigInstance
         fields = "__all__"
         read_only_fields = ("id", "created_at", "updated_at", "base_config_hash")
+        validators = []  # Let model.full_clean() and DB handle constraints
+
+    def validate_scope_type(self, value):
+        if value == "oob":
+            raise serializers.ValidationError("OOB configs are immutable via the API.")
+        return value
+
+    def validate(self, data):
+        scope_type = data.get("scope_type")
+        scope_id = data.get("scope_id")
+
+        if scope_type in ("tenant", "user") and not scope_id:
+            raise serializers.ValidationError(
+                {"scope_id": f"scope_id is required for scope_type='{scope_type}'."}
+            )
+        
+        if scope_type == "oob" and scope_id:
+            # Although oob is blocked in validate_scope_type, this is good for completeness
+            raise serializers.ValidationError(
+                {"scope_id": "OOB configs must not have a scope_id."}
+            )
+
+        return data

@@ -1,0 +1,71 @@
+{% extends "admin/change_form.html" %}
+
+{% block admin_change_form_document_ready %}
+{{ block.super }}
+<script>
+(function () {
+    "use strict";
+
+    /* ------------------------------------------------------------------ *
+     * JSON Editor + Client-Side Validation for config_json
+     * ------------------------------------------------------------------ */
+    const textarea = document.getElementById("id_config_json");
+    if (!textarea) return;
+
+    /* Style the textarea as a monospace JSON editor */
+    Object.assign(textarea.style, {
+        fontFamily: "'Fira Mono', 'Consolas', 'Courier New', monospace",
+        fontSize: "13px",
+        lineHeight: "1.5",
+        minHeight: "320px",
+        width: "100%",
+        backgroundColor: "#1e1e2e",
+        color: "#cdd6f4",
+        border: "1px solid #45475a",
+        borderRadius: "6px",
+        padding: "12px",
+        resize: "vertical",
+        boxSizing: "border-box",
+    });
+
+    /* Pretty-print the initial value if it is valid JSON */
+    try {
+        const parsed = JSON.parse(textarea.value);
+        textarea.value = JSON.stringify(parsed, null, 2);
+    } catch (_) { /* leave as-is if not valid yet */ }
+
+    /* Inline error element */
+    const errorDiv = document.createElement("div");
+    errorDiv.id = "json-validation-error";
+    Object.assign(errorDiv.style, {
+        display: "none",
+        marginTop: "6px",
+        padding: "8px 12px",
+        background: "#f38ba8",
+        color: "#1e1e2e",
+        borderRadius: "4px",
+        fontFamily: "monospace",
+        fontSize: "13px",
+        fontWeight: "bold",
+    });
+    textarea.insertAdjacentElement("afterend", errorDiv);
+
+    /* Validate on form submit */
+    const form = textarea.closest("form");
+    if (!form) return;
+
+    form.addEventListener("submit", function (e) {
+        errorDiv.style.display = "none";
+        try {
+            JSON.parse(textarea.value);
+        } catch (err) {
+            e.preventDefault();
+            errorDiv.textContent = "Invalid JSON: " + err.message;
+            errorDiv.style.display = "block";
+            textarea.focus();
+            textarea.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+    });
+})();
+</script>
+{% endblock %}
