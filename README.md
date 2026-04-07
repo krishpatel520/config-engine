@@ -12,11 +12,11 @@ Snapshot-based UI configuration management system with three levels: **OOB (Out-
 |---|---|
 | **Snapshot model** | Full JSON copies per scope, no partial updates or diffs |
 | **Resolution order** | User → Tenant → OOB (first active match wins) |
-| **Lineage tracking** | Every override stores `base_config_id`, `base_release_version`, `base_config_hash` |
-| **Immutable OOB** | OOB configs are write-once; set via management command only, never via API |
-| **Drift detection** | SHA-256 hash comparison between override's base and current OOB payload |
+| **Lineage tracking** | Every override requires `base_config_id`, `base_release_version`; `base_config_hash` auto-populated if missing |
+| **Immutable OOB** | OOB configs are write-once; set via management command only, never via API; `is_active` locked in Admin |
+| **Drift detection** | SHA-256 hash comparison between override's `base_config_hash` and current active OOB payload |
 | **Upgrade detection** | `base_config_id` comparison against the current active OOB id |
-| **Cache layer** | Two-key pointer scheme (`config:ptr:…` → `config:…:release`), 300 s TTL, auto-invalidated on writes |
+| **Cache layer** | Two-key pointer scheme (`config:ptr:…` → `config:…:release`), 300s TTL, auto-invalidated on writes |
 
 ---
 
@@ -143,11 +143,15 @@ Content-Type: application/json
 {
   "config_key": "invoice.form",
   "scope_type": "tenant",
-  "tenant_id": "tenant_123",
+  "scope_id": "tenant_123",
   "config_json": { "fields": { "name": { "visible": false }, "email": { "visible": true } } },
-  "release_version": "v1.0.0"
+  "release_version": "v1.0.0",
+  "base_config_id": "4f6cd786-5eb1-458d-8979-f48a0a6de5bd",
+  "base_release_version": "v1.0.0"
 }
 ```
+
+> **Tip:** You do not need to provide `base_config_hash`; the engine will automatically fetch the OOB record and compute the hash before saving.
 
 ---
 
@@ -157,13 +161,13 @@ Access at **http://127.0.0.1:8000/admin/**
 
 | Feature | Description |
 |---|---|
-| **Config Explorer** | Filter by `config_key`, `scope_type`, `release_version`, `is_active` |
+| **Config Explorer** | Filter by `config_key`, `scope_type`, `release_version`, `is_active`, `base_config_id` |
 | **JSON Editor** | Monospace textarea with client-side `JSON.parse()` validation on submit |
 | **Diff Viewer** | Per-record side-by-side view vs. current active OOB; status banner (🔴 drifted / 🟡 outdated / 🟢 in sync) |
 | **Upgrade Alerts** | Banner on changelist showing count of outdated tenant configs |
-| **Bulk Actions** | Mark selected as inactive · Reset selected to OOB |
+| **Bulk Actions** | Mark selected as inactive (skips OOB records) · Reset selected to OOB |
 | **Lineage Links** | Clickable column to filter by `base_config_id` |
-| **OOB Protection** | Delete button hidden / blocked for all `scope_type='oob'` records |
+| **OOB Protection** | Delete button hidden and `is_active` field locked for all `scope_type='oob'` records |
 
 ---
 
@@ -177,7 +181,7 @@ Access at **http://127.0.0.1:8000/admin/**
 .\venv\Scripts\python.exe -m pytest tests/test_config_engine.py --cov=apps --cov-report=term-missing
 ```
 
-The test suite (44 tests) covers:
+The test suite (**58 tests**) covers:
 
 - **ConfigHasher** — determinism, key-order independence, SHA-256 hex output
 - **ConfigResolutionService** — full resolution hierarchy, lineage storage, deactivation, drift & outdated detection
