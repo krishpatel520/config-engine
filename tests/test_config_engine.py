@@ -85,6 +85,7 @@ def user_config(db, oob_config, tenant_config):
         scope_id=USER_ID,
         config_json=USER_JSON,
         release_version="v1.0.0",
+        parent_config_instance_id=tenant_config.id,
     )
 
 
@@ -348,12 +349,16 @@ class TestAPIViews:
     # ── POST /api/v1/config/override/ ───────────────────────────────────────
 
     def test_create_override_success(self, api_client, oob_config):
+        expected_hash = ConfigHasher.generate_hash(OOB_JSON)
         payload = {
             "config_key": CONFIG_KEY,
             "scope_type": "tenant",
             "scope_id": TENANT_ID,
             "config_json": TENANT_JSON,
             "release_version": "v1.0.0",
+            "base_config_id": str(oob_config.id),
+            "base_release_version": oob_config.release_version,
+            "base_config_hash": expected_hash,
         }
         r = api_client.post("/api/v1/config/override/", payload, format="json")
         assert r.status_code == status.HTTP_201_CREATED
@@ -375,6 +380,17 @@ class TestAPIViews:
         r = api_client.post("/api/v1/config/override/", payload, format="json")
         assert r.status_code == status.HTTP_400_BAD_REQUEST
         assert "immutable" in r.data["scope_type"][0].lower()
+
+    def test_reset_to_oob_blocks_oob_scope(self, api_client, oob_config):
+        """POST /api/v1/config/reset/ with scope_type='oob' must return 400."""
+        payload = {
+            "config_key": CONFIG_KEY,
+            "scope_type": "oob",
+            "scope_id": "any",
+        }
+        r = api_client.post("/api/v1/config/reset/", payload, format="json")
+        assert r.status_code == status.HTTP_400_BAD_REQUEST
+        assert "OOB configs cannot be reset" in r.data["error"]
 
     def test_create_override_400_missing_fields(self, api_client, db):
         r = api_client.post("/api/v1/config/override/", {"config_key": CONFIG_KEY}, format="json")

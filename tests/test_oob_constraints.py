@@ -41,7 +41,102 @@ class TestOOBConstraints:
         oob.config_json = {"initial": False}
         with pytest.raises(ValidationError) as exc:
             oob.save()
-        assert "OOB configs are immutable. Cannot change field 'config_json'" in str(exc.value)
+        assert "ConfigInstance is immutable. Field 'config_json' cannot be changed after creation." in str(exc.value)
+
+    def test_tenant_immutability(self):
+        """Updating a tenant instance's core fields should fail."""
+        tenant = ConfigInstance.objects.create(
+            config_key="tenant.key",
+            scope_type="tenant",
+            scope_id="t1",
+            release_version="v1",
+            config_json={"initial": True},
+            base_config_id="00000000-0000-0000-0000-000000000001",
+            base_release_version="v1",
+            base_config_hash="dummy_hash",
+        )
+        
+        tenant.config_json = {"initial": False}
+        with pytest.raises(ValidationError) as exc:
+            tenant.save()
+        assert "ConfigInstance is immutable. Field 'config_json' cannot be changed after creation." in str(exc.value)
+
+    def test_multiple_inactive_records_allowed(self):
+        """Ensure the new UniqueConstraint allows multiple inactive records for the same scope."""
+        config_key = "multi.inactive"
+        scope_type = "tenant"
+        scope_id = "t_multi"
+        
+        # Create 1st, then deactivate
+        ConfigInstance.objects.create(
+            config_key=config_key, scope_type=scope_type, scope_id=scope_id, 
+            release_version="v1", config_json={"v": 1}, is_active=False,
+            base_config_id="00000000-0000-0000-0000-000000000001",
+            base_release_version="v1",
+            base_config_hash="dummy_hash",
+        )
+        # Create 2nd, then deactivate
+        ConfigInstance.objects.create(
+            config_key=config_key, scope_type=scope_type, scope_id=scope_id, 
+            release_version="v2", config_json={"v": 2}, is_active=False,
+            base_config_id="00000000-0000-0000-0000-000000000001",
+            base_release_version="v1",
+            base_config_hash="dummy_hash",
+        )
+        # Create 3rd, make it active
+        ConfigInstance.objects.create(
+            config_key=config_key, scope_type=scope_type, scope_id=scope_id, 
+            release_version="v3", config_json={"v": 3}, is_active=True,
+            base_config_id="00000000-0000-0000-0000-000000000001",
+            base_release_version="v1",
+            base_config_hash="dummy_hash",
+        )
+        
+        assert ConfigInstance.objects.filter(config_key=config_key, is_active=False).count() == 2
+        assert ConfigInstance.objects.filter(config_key=config_key, is_active=True).count() == 1
+
+    def test_automatic_deactivation_on_save(self):
+        """Saving a new active config manually must deactivate existing ones (backup enforcement)."""
+        config_key = "auto.deactivate"
+        scope_type = "tenant"
+        scope_id = "t_auto"
+        
+        # 1. Create first active
+        c1 = ConfigInstance.objects.create(
+            config_key=config_key, scope_type=scope_type, scope_id=scope_id, 
+            release_version="v1", config_json={"v": 1}, is_active=True,
+            base_config_id="00000000-0000-0000-0000-000000000001",
+            base_release_version="v1",
+            base_config_hash="dummy_hash",
+        )
+        
+        # 2. Create second active WITHOUT using the service layer
+        c2 = ConfigInstance.objects.create(
+            config_key=config_key, scope_type=scope_type, scope_id=scope_id, 
+            release_version="v2", config_json={"v": 2}, is_active=True,
+            base_config_id="00000000-0000-0000-0000-000000000001",
+            base_release_version="v1",
+            base_config_hash="dummy_hash",
+        )
+        
+        c1.refresh_from_db()
+        assert c1.is_active is False
+        assert c2.is_active is True
+
+    def test_block_reactivation(self):
+        """Attempting to set is_active=True on an inactive record must fail."""
+        c1 = ConfigInstance.objects.create(
+            config_key="no.reactivate", scope_type="tenant", scope_id="t1", 
+            release_version="v1", config_json={"v": 1}, is_active=False,
+            base_config_id="00000000-0000-0000-0000-000000000001",
+            base_release_version="v1",
+            base_config_hash="dummy_hash",
+        )
+        
+        c1.is_active = True
+        with pytest.raises(ValidationError) as exc:
+            c1.save()
+        assert "Inactive configuration records cannot be reactivated" in str(exc.value)
 
     def test_oob_immutability_allows_is_active(self):
         """is_active MUST remain mutable for OOB records so they can be deactivated."""
@@ -90,6 +185,9 @@ class TestOOBConstraints:
                 scope_type="tenant",
                 scope_id=None,
                 release_version="v1",
-                config_json={"foo": "bar"}
+                config_json={"foo": "bar"},
+                base_config_id="00000000-0000-0000-0000-000000000001",
+                base_release_version="v1",
+                base_config_hash="dummy_hash",
             )
         assert "scope_id is required for scope_type='tenant'" in str(exc.value)

@@ -7,7 +7,8 @@ from rest_framework.views import APIView
 
 from apps.config_engine.models import ConfigInstance
 from apps.config_engine.serializers import ConfigInstanceSerializer
-from apps.config_engine.services import ConfigHasher, ConfigResolutionService
+from apps.config_engine.services import ConfigResolutionService
+from apps.config_engine.utils import ConfigHasher
 
 # ---------------------------------------------------------------------------
 # Inline response schemas for endpoints that return free-form dicts
@@ -155,9 +156,19 @@ class ResetToOOBView(APIView):
     """
 
     def post(self, request: Request) -> Response:
-        data = request.data
+        scope_type = request.data.get("scope_type")
+        if scope_type == "oob":
+            return Response(
+                {
+                    "error": "OOB configs cannot be reset. They are managed via the release pipeline only."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        missing = [f for f in ("config_key", "scope_type", "scope_id") if not data.get(f)]
+        data = request.data
+        missing = [
+            f for f in ("config_key", "scope_type", "scope_id") if not data.get(f)
+        ]
         if missing:
             return Response(
                 {"detail": f"Missing required fields: {missing}"},

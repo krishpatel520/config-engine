@@ -6,18 +6,11 @@ from django.core.cache import cache
 from django.db import models
 
 from apps.config_engine.models import ConfigInstance
+from apps.config_engine.utils import ConfigHasher
 
 CACHE_TIMEOUT = 300  # seconds
 
 
-class ConfigHasher:
-    """Utility for producing deterministic SHA-256 hashes of config payloads."""
-
-    @staticmethod
-    def generate_hash(config_json: dict) -> str:
-        """SHA256 of the JSON with keys sorted deterministically."""
-        normalized = json.dumps(config_json, sort_keys=True)
-        return hashlib.sha256(normalized.encode()).hexdigest()
 
 
 class ConfigResolutionService:
@@ -67,6 +60,11 @@ class ConfigResolutionService:
         return f"config:{config_key}:{t}:{u}:{release_version}"
 
     @staticmethod
+    def _registry_key(config_key: str, user_id: str) -> str:
+        """Key for the registry of tenants that have cached a resolution for this user."""
+        return f"config:registry:{config_key}:{user_id}"
+
+    @staticmethod
     def invalidate_cache(
         config_key: str,
         tenant_id: str | None = None,
@@ -77,13 +75,35 @@ class ConfigResolutionService:
         Delete both the pointer key and the full versioned key for the given
         (config_key, tenant_id, user_id) combination.
 
-        If release_version is provided the full key is deleted directly;
-        otherwise only the pointer key is removed (the full key expires naturally).
+        If user_id is provided but tenant_id is None, it targets ALL tenants
+        recorded in the registry for this user.
         """
+        if user_id and not tenant_id:
+            # BROADCAST: Invalidate across all known tenants for this user
+            reg_key = ConfigResolutionService._registry_key(config_key, user_id)
+            tenants = cache.get(reg_key, set())
+            # Ensure we also invalidate the 'none' tenant (global user resolution)
+            tenants.add(None)
+            
+            for t_id in tenants:
+                ConfigResolutionService._invalidate_single_scope(config_key, t_id, user_id, release_version)
+            
+            cache.delete(reg_key)
+        else:
+            # SINGLE SCOPE: Just invalidate the specific combination provided
+            ConfigResolutionService._invalidate_single_scope(config_key, tenant_id, user_id, release_version)
+
+    @staticmethod
+    def _invalidate_single_scope(
+        config_key: str,
+        tenant_id: str | None,
+        user_id: str | None,
+        release_version: str | None,
+    ) -> None:
+        """Internal helper to invalidate one specific (key, tenant, user) combination."""
         ptr_key = ConfigResolutionService._ptr_key(config_key, tenant_id, user_id)
 
         if release_version is None:
-            # Try to resolve the full key via the pointer before deleting both
             release_version = cache.get(ptr_key)
 
         if release_version:
@@ -152,6 +172,15 @@ class ConfigResolutionService:
                 ptr_key = ConfigResolutionService._ptr_key(config_key, tenant_id, user_id)
                 cache.set(full_key, result, timeout=CACHE_TIMEOUT)
                 cache.set(ptr_key, instance.release_version, timeout=CACHE_TIMEOUT)
+
+                # --- registry write: track this tenant for the user if applicable ---
+                if user_id:
+                    reg_key = ConfigResolutionService._registry_key(config_key, user_id)
+                    tenants = cache.get(reg_key, set())
+                    if tenant_id not in tenants:
+                        tenants.add(tenant_id)
+                        cache.set(reg_key, tenants, timeout=CACHE_TIMEOUT)
+
                 return result
 
         # No OOB found — surface Django's own DoesNotExist

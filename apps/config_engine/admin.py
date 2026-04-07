@@ -36,7 +36,7 @@ class ConfigInstanceAdmin(ModelAdmin):
         "lineage_link",
         "diff_link",
     )
-    list_filter = ("scope_type", "is_active", "release_version")
+    list_filter = ("scope_type", "is_active", "release_version", "base_config_id")
     search_fields = ("config_key", "scope_id")
     ordering = ("-created_at",)
 
@@ -52,7 +52,18 @@ class ConfigInstanceAdmin(ModelAdmin):
 
     @admin.action(description="Mark selected as inactive")
     def mark_as_inactive(self, request, queryset):
-        updated = queryset.update(is_active=False)
+        """
+        Deactivate selected overrides. Skips OOB records with a warning.
+        """
+        oob_count = queryset.filter(scope_type="oob").count()
+        updated = queryset.exclude(scope_type="oob").update(is_active=False)
+        
+        if oob_count:
+            self.message_user(
+                request,
+                f"{oob_count} OOB record(s) were skipped — OOB is_active cannot be modified.",
+                level=messages.WARNING
+            )
         self.message_user(request, f"{updated} config instance(s) marked as inactive.")
 
     @admin.action(description="Reset selected to OOB")
@@ -92,32 +103,56 @@ class ConfigInstanceAdmin(ModelAdmin):
     # ------------------------------------------------------------------
     # OOB immutability — block delete
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Immutability enforcement in Admin — block delete
+    # ------------------------------------------------------------------
     def delete_model(self, request, obj):
-        """Block deletion of OOB configs from the object detail page."""
-        if obj.scope_type == "oob":
-            raise PermissionDenied(
-                "OOB configs are immutable and cannot be deleted."
-            )
-        super().delete_model(request, obj)
+        """Block deletion of all config instances."""
+        raise PermissionDenied(
+            "Config instances are immutable and cannot be deleted once created."
+        )
 
     def delete_queryset(self, request, queryset):
-        """Block deletion of OOB configs from the list bulk-delete action."""
-        if queryset.filter(scope_type="oob").exists():
-            raise PermissionDenied(
-                "OOB configs are immutable and cannot be deleted."
-            )
-        super().delete_queryset(request, queryset)
+        """Block bulk deletion of all config instances."""
+        raise PermissionDenied(
+            "Config instances are immutable and cannot be deleted once created."
+        )
 
     def has_delete_permission(self, request, obj=None):
-        """Grey-out the delete button on the detail page for OOB configs."""
-        if obj is not None and obj.scope_type == "oob":
-            return False
-        return super().has_delete_permission(request, obj)
+        """Disable the delete button for all config records."""
+        return False
+
+    # ------------------------------------------------------------------
+    # Immutability enforcement in Admin
+    # ------------------------------------------------------------------
+    def get_readonly_fields(self, request, obj=None):
+        """
+        Make all core fields read-only for existing objects to enforce the
+        replace-only model in the UI.
+        """
+        base_readonly = list(self.readonly_fields)
+        if obj and obj.scope_type == "oob":
+            if "is_active" not in base_readonly:
+                base_readonly.append("is_active")
+
+        if obj:  # editing an existing object
+            return tuple(base_readonly) + (
+                "config_key",
+                "scope_type",
+                "scope_id",
+                "release_version",
+                "config_json",
+                "base_config_id",
+                "base_release_version",
+                "parent_config_instance_id",
+            )
+        return tuple(base_readonly)
 
     def has_change_permission(self, request, obj=None):
-        """Prevent editing of OOB configs in the admin."""
-        if obj is not None and obj.scope_type == "oob":
-            return False
+        """
+        Allow change permission for all records so is_active can be toggled,
+        while other fields are protected by get_readonly_fields().
+        """
         return super().has_change_permission(request, obj)
 
     # ------------------------------------------------------------------
@@ -153,26 +188,46 @@ class ConfigInstanceAdmin(ModelAdmin):
         return custom + urls
 
     def diff_view(self, request, pk):
-        """Side-by-side JSON diff: this config vs current active OOB."""
+        """Side-by-side JSON diff: this config vs (1) its own base and (2) latest OOB."""
         obj = get_object_or_404(ConfigInstance, pk=pk)
 
-        oob = ConfigResolutionService.get_active(
+        # 1. Base config (the parent this was cloned from)
+        base_obj = None
+        if obj.base_config_id:
+            try:
+                base_obj = ConfigInstance.objects.get(pk=obj.base_config_id)
+            except ConfigInstance.DoesNotExist:
+                pass
+
+        # 2. Latest OOB config (the current active OOB for this key)
+        latest_oob = ConfigResolutionService.get_active(
             config_key=obj.config_key,
             scope_type="oob",
             scope_id=None,
         )
 
         is_drifted = ConfigResolutionService.detect_drift(obj)
+        # Outdated if our base is not the current active OOB
         is_outdated = (
-            oob is not None and obj.base_config_id != oob.id
+            latest_oob is not None and obj.base_config_id != latest_oob.id
         )
 
         context = {
             **self.admin_site.each_context(request),
             "obj": obj,
-            "oob": oob,
+            "base_obj": base_obj,
+            "latest_oob": latest_oob,
             "this_json": json.dumps(obj.config_json, indent=2, sort_keys=True),
-            "oob_json": json.dumps(oob.config_json, indent=2, sort_keys=True) if oob else "",
+            "base_json": (
+                json.dumps(base_obj.config_json, indent=2, sort_keys=True)
+                if base_obj
+                else ""
+            ),
+            "latest_oob_json": (
+                json.dumps(latest_oob.config_json, indent=2, sort_keys=True)
+                if latest_oob
+                else ""
+            ),
             "is_drifted": is_drifted,
             "is_outdated": is_outdated,
             "title": f"Config Diff — {obj.config_key}",
